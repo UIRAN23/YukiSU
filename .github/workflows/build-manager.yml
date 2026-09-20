@@ -185,7 +185,7 @@ jobs:
         id: need_upload
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CAN_UPLOAD: ${{ github.event_name == 'push' && (github.ref_name == 'main' || startsWith(github.ref_name, 'feat/')) }}
+          CAN_UPLOAD: ${{ github.event.repository.fork != true && github.event_name == 'push' && (github.ref_name == 'main' || startsWith(github.ref_name, 'feat/')) }}
         run: |
           if [ "$CAN_UPLOAD" = "true" ] && [ -n "$BOT_TOKEN" ]; then
             echo "UPLOAD=true" >> "$GITHUB_OUTPUT"
@@ -212,7 +212,7 @@ jobs:
           fi
 
       - name: Require signing keys for main nightly
-        if: github.ref_name == 'main' && steps.gpg_check.outputs.available != 'true'
+        if: github.ref_name == 'main' && github.event.repository.fork != true && steps.gpg_check.outputs.available != 'true'
         run: |
           echo 'Production APK and GPG signing keys are required for main nightly builds.' >&2
           exit 1

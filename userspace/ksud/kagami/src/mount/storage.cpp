@@ -388,18 +388,29 @@ Handle setup(const Config& config) {
             return h;
     }
 
+    const auto ext4_failure = [&]() -> Handle {
+        if (!want_auto || use_tmpfs)
+            return h;
+        mlog("storage: auto ext4 unavailable; trying tmpfs (backend validation remains required)",
+             logging::Level::Warning);
+        Config fallback = config;
+        fallback.fs_type = "tmpfs";
+        fallback.mirror_dir = base;
+        return setup(fallback);
+    };
+
     // ext4 loop image (forced, or the auto fallback). Writable layer lives inside.
     if (!fs::exists(img) && !make_ext4_image(img, config.mirror_img_size_mb)) {
-        return h;
+        return ext4_failure();
     }
     std::string metadata_error;
     if (!prepare_private_file(img, metadata_error)) {
         mlog("storage: " + metadata_error, logging::Level::Error);
-        return h;
+        return ext4_failure();
     }
     if (!run_tool({"mount", "-t", "ext4", "-o", "loop,rw,noatime", img, h.content_dir})) {
         mlog("storage: mount ext4 image failed", logging::Level::Error);
-        return h;
+        return ext4_failure();
     }
     pending.add(h.content_dir);
     if (writable) {
