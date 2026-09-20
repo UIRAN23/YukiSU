@@ -318,7 +318,6 @@ jobs:
           test -s app-release.sig
 
       - name: Upload build artifact
-        if: steps.gpg_check.outputs.available == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: Manager-arm64-v8a

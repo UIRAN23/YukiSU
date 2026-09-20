@@ -7,3 +7,5 @@ The fallback does not repair the underlying loop-device I/O failure. Verify Auto
 Fork Actions builds use the existing temporary CI APK signing path when production keys are unavailable. Production GPG signing requirements remain enabled outside forks. Telegram publishing is disabled for fork builds. This is a test APK, not an upstream-signed update; its certificate may differ from an installed manager.
 
 No device flashing or on-device validation is performed by this workflow.
+
+The repacked APK is retained as Manager-arm64-v8a even without an upstream GPG key. GPG metadata publication remains disabled in the fork.
