@@ -130,6 +130,15 @@ jobs:
     #     rm -rf "upx-${UPX_VERSION}-amd64_linux" "upx-${UPX_VERSION}-amd64_linux.tar.xz"
     #     upx --version | head -1
 
+    - name: Build embedded EROFS tools
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq autoconf automake libtool pkg-config
+        bash userspace/ksud/scripts/build-erofs-tool.sh "${{ steps.target.outputs.android_target }}"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: erofs-source-${{ inputs.target }}
+        path: erofs-source/
     - name: Build ksud
       run: |
         cd userspace/ksud

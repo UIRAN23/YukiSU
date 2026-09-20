@@ -5,10 +5,14 @@
 
 #include "mount/mount_fs.hpp"
 
+#include <fcntl.h>
+#include <linux/loop.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
+#include <array>
 
 #include <algorithm>
 #include <cerrno>
@@ -89,18 +93,126 @@ bool tmpfs_xattr_enabled() {
     return enabled;
 }
 
+bool valid_ext4(const std::string& path) {
+    int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return false;
+    std::array<unsigned char, 4096> header{};
+    const auto count = pread(fd, header.data(), header.size(), 0);
+    close(fd);
+    return count == static_cast<ssize_t>(header.size()) && header[1080] == 0x53 &&
+           header[1081] == 0xef;
+}
+
+bool mount_image(const std::string& image, const std::string& target, const char* type,
+                 bool readonly) {
+    int source = open(image.c_str(), (readonly ? O_RDONLY : O_RDWR) | O_CLOEXEC | O_NOFOLLOW);
+    if (source < 0) {
+        mlog("storage: image open failed: " + std::string(strerror(errno)), logging::Level::Error);
+        return false;
+    }
+    std::array<unsigned char, 4096> expected{};
+    if (pread(source, expected.data(), expected.size(), 0) !=
+        static_cast<ssize_t>(expected.size())) {
+        mlog("storage: backing file read failed: " + std::string(strerror(errno)),
+             logging::Level::Error);
+        close(source);
+        return false;
+    }
+    int control = open("/dev/block/loop-control", O_RDWR | O_CLOEXEC);
+    if (control < 0)
+        control = open("/dev/loop-control", O_RDWR | O_CLOEXEC);
+    if (control < 0) {
+        close(source);
+        return false;
+    }
+    int loop = -1;
+    std::string device;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const int number = ioctl(control, LOOP_CTL_GET_FREE);
+        if (number < 0)
+            break;
+        device = "/dev/block/loop" + std::to_string(number);
+        loop = open(device.c_str(), O_RDWR | O_CLOEXEC);
+        if (loop < 0) {
+            device = "/dev/loop" + std::to_string(number);
+            loop = open(device.c_str(), O_RDWR | O_CLOEXEC);
+        }
+        if (loop < 0)
+            break;
+        if (ioctl(loop, LOOP_SET_FD, source) == 0)
+            break;
+        const int error = errno;
+        close(loop);
+        loop = -1;
+        if (error != EBUSY)
+            break;
+    }
+    close(control);
+    bool ok = false;
+    if (loop >= 0) {
+        loop_info64 info{};
+        info.lo_flags = LO_FLAGS_AUTOCLEAR | (readonly ? LO_FLAGS_READ_ONLY : 0);
+        strncpy(reinterpret_cast<char*>(info.lo_file_name), image.c_str(), LO_NAME_SIZE - 1);
+        if (ioctl(loop, LOOP_SET_STATUS64, &info) == 0) {
+            (void)ioctl(loop, LOOP_SET_DIRECT_IO, 0);
+            std::array<unsigned char, 4096> observed{};
+            const auto count = pread(loop, observed.data(), observed.size(), 0);
+            if (count == static_cast<ssize_t>(observed.size()) && observed == expected) {
+                ok = ::mount(device.c_str(), target.c_str(), type,
+                             MS_NOATIME | (readonly ? MS_RDONLY : 0), nullptr) == 0;
+                if (!ok)
+                    mlog("storage: filesystem mount failed on " + device + ": " + strerror(errno),
+                         logging::Level::Error);
+            } else {
+                mlog("storage: backing file readable but buffered loop probe failed on " + device +
+                         ": " + strerror(errno),
+                     logging::Level::Error);
+            }
+        } else {
+            mlog("storage: loop configuration failed: " + std::string(strerror(errno)),
+                 logging::Level::Error);
+        }
+        if (!ok)
+            (void)ioctl(loop, LOOP_CLR_FD, 0);
+        close(loop);
+    } else {
+        mlog("storage: loop allocation failed: " + std::string(strerror(errno)),
+             logging::Level::Error);
+    }
+    close(source);
+    return ok;
+}
+
 bool make_ext4_image(const std::string& img, int size_mb) {
-    const std::string size = std::to_string(size_mb) + "M";
-    if (!run_tool({"truncate", "-s", size, img}) && !run_tool({"fallocate", "-l", size, img})) {
-        mlog("storage: failed to allocate image " + img, logging::Level::Error);
+    std::string temporary = img + ".new.XXXXXX";
+    const int fd = mkstemp(temporary.data());
+    if (fd < 0)
         return false;
+    const bool allocated =
+        size_mb > 0 && ftruncate(fd, static_cast<off_t>(size_mb) * 1024 * 1024) == 0;
+    close(fd);
+    bool ok =
+        allocated && (run_tool({"mke2fs", "-t", "ext4", "-O", "^has_journal", "-F", temporary}) ||
+                      run_tool({"mkfs.ext4", "-O", "^has_journal", "-F", temporary}));
+    ok = ok && valid_ext4(temporary);
+    std::string error;
+    ok = ok && prepare_private_file(temporary, error);
+    const int saved = open(temporary.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+    if (saved < 0)
+        ok = false;
+    else {
+        if (fsync(saved) != 0)
+            ok = false;
+        close(saved);
     }
-    if (!run_tool({"mke2fs", "-t", "ext4", "-O", "^has_journal", "-F", img}) &&
-        !run_tool({"mkfs.ext4", "-O", "^has_journal", "-F", img})) {
-        mlog("storage: mke2fs failed for " + img, logging::Level::Error);
-        return false;
+    if (ok)
+        ok = rename(temporary.c_str(), img.c_str()) == 0;
+    if (!ok) {
+        unlink(temporary.c_str());
+        mlog("storage: ext4 image build/validation failed", logging::Level::Error);
     }
-    return true;
+    return ok;
 }
 
 // Make a mount private and register it with KernelSU for per-app unmount.
@@ -325,7 +437,7 @@ Handle setup(const Config& config) {
             mlog("storage: erofs image missing (" + erofs_img + "); build it at install time");
             return h;
         }
-        if (!run_tool({"mount", "-t", "erofs", "-o", "loop,ro", erofs_img, h.content_dir})) {
+        if (!mount_image(erofs_img, h.content_dir, "erofs", true)) {
             mlog("storage: mount erofs image failed", logging::Level::Error);
             return h;
         }
@@ -388,29 +500,27 @@ Handle setup(const Config& config) {
             return h;
     }
 
-    const auto ext4_failure = [&]() -> Handle {
-        if (!want_auto || use_tmpfs)
-            return h;
-        mlog("storage: auto ext4 unavailable; trying tmpfs (backend validation remains required)",
-             logging::Level::Warning);
-        Config fallback = config;
-        fallback.fs_type = "tmpfs";
-        fallback.mirror_dir = base;
-        return setup(fallback);
-    };
-
     // ext4 loop image (forced, or the auto fallback). Writable layer lives inside.
+    if (fs::exists(img) && !valid_ext4(img)) {
+        const std::string backup = img + ".invalid";
+        if (fs::exists(backup) || rename(img.c_str(), backup.c_str()) != 0) {
+            mlog("storage: invalid ext4 image; refusing to overwrite backup",
+                 logging::Level::Error);
+            return h;
+        }
+        mlog("storage: preserved invalid image as " + backup, logging::Level::Warning);
+    }
     if (!fs::exists(img) && !make_ext4_image(img, config.mirror_img_size_mb)) {
-        return ext4_failure();
+        return h;
     }
     std::string metadata_error;
     if (!prepare_private_file(img, metadata_error)) {
         mlog("storage: " + metadata_error, logging::Level::Error);
-        return ext4_failure();
+        return h;
     }
-    if (!run_tool({"mount", "-t", "ext4", "-o", "loop,rw,noatime", img, h.content_dir})) {
+    if (!mount_image(img, h.content_dir, "ext4", false)) {
         mlog("storage: mount ext4 image failed", logging::Level::Error);
-        return ext4_failure();
+        return h;
     }
     pending.add(h.content_dir);
     if (writable) {

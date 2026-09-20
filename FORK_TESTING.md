@@ -1,11 +1,11 @@
-# Auto storage test build
+# Image-storage test build
 
-This fork adds one tmpfs attempt when automatically selected ext4 cannot be prepared or mounted. Forced ext4 remains forced. The backend still validates files and SELinux metadata; success requires the final mount plan to complete.
+The previous Auto-to-tmpfs fallback is removed. This build addresses image preparation and attaches loop devices explicitly in buffered mode. It probes the backing file and loop device separately before mounting, so a loop read failure is not presented as a filesystem-format error.
 
-The fallback does not repair the underlying loop-device I/O failure. Verify Auto after reboot using the Kagami log, the actual ODM mounts, and the camera.
+Ext4 is built in a temporary file, checked for its superblock signature, synced and renamed after successful formatting. An existing invalid image is retained as mirror.img.invalid before rebuilding; an existing backup is never overwritten automatically.
 
-Fork Actions builds use the existing temporary CI APK signing path when production keys are unavailable. Production GPG signing requirements remain enabled outside forks. Telegram publishing is disabled for fork builds. This is a test APK, not an upstream-signed update; its certificate may differ from an installed manager.
+EROFS is built from selected OverlayFS modules on first mount of the boot. Module attributes, whiteouts and opaque directories pass through the existing copy/relabel pipeline. Embedded pinned erofs-utils tools create an uncompressed 4 KiB-block image and verify its data before committing it. Matching tool source archives are retained as Actions artifacts. EROFS data is rebuilt after module changes on reboot.
 
-No device flashing or on-device validation is performed by this workflow.
+Device evidence from 2026-09-20: EROFS failed because mirror.erofs did not exist; ext4 failed at loop49 reads before the superblock could be read. These are different failures. Whether explicit buffered loop attachment fixes this device's I/O failure still requires testing; no kernel filesystem changes or signature bypass are included.
 
-The repacked APK is retained as Manager-arm64-v8a even without an upstream GPG key. GPG metadata publication remains disabled in the fork.
+Fork APKs use a temporary CI certificate and are not updates signed by the upstream developer. The kernel does not automatically trust that certificate. The final Manager-arm64-v8a artifact contains the repacked APK; do not substitute the intermediate Gradle artifact.

@@ -1,5 +1,7 @@
 #include "mount/overlayfs.hpp"
+#include "assets.hpp"
 #include "core/runtime.hpp"
+#include "utils.hpp"
 
 #include "kagami/kasumi_client.hpp"
 #include "mount/backend.hpp"
@@ -592,9 +594,65 @@ bool sync_content(const std::vector<ModuleEntry>& modules, const storage::Handle
     }
     return true;
 }
+bool build_erofs(const std::vector<ModuleEntry>& modules, const Config& config) {
+    std::string temporary = (runtime_data_dir() / "erofs-build.XXXXXX").string();
+    if (!mkdtemp(temporary.data()))
+        return false;
+    const fs::path root = temporary;
+    const auto cleanup = [&]() {
+        std::error_code error;
+        fs::remove_all(root, error);
+    };
+    storage::Handle staging;
+    staging.mode = storage::Mode::Ext4;
+    staging.content_dir = (root / "content").string();
+    const auto& partitions =
+        config.partitions.empty() ? fsutil::managed_partitions() : config.partitions;
+    if (!sync_content(modules, staging, partitions)) {
+        cleanup();
+        return false;
+    }
+    const std::string mkfs = (root / "mkfs.erofs").string();
+    const std::string fsck = (root / "fsck.erofs").string();
+    if (!ksud::copy_asset_to_file("mkfs.erofs", mkfs) ||
+        !ksud::copy_asset_to_file("fsck.erofs", fsck) || chmod(mkfs.c_str(), 0700) != 0 ||
+        chmod(fsck.c_str(), 0700) != 0) {
+        mlog("overlay: embedded EROFS tools unavailable", logging::Level::Error);
+        cleanup();
+        return false;
+    }
+    const std::string image = (root / "mirror.erofs").string();
+    const auto built = ksud::exec_command({mkfs, "-b", "4096", image, staging.content_dir});
+    if (built.exit_code != 0) {
+        mlog("overlay: EROFS build failed: " + built.stderr_str, logging::Level::Error);
+        cleanup();
+        return false;
+    }
+    const auto checked = ksud::exec_command({fsck, "--extract", image});
+    std::string error;
+    bool ok = checked.exit_code == 0 && prepare_private_file(image, error);
+    const int fd = open(image.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        ok = false;
+    else {
+        if (fsync(fd) != 0)
+            ok = false;
+        close(fd);
+    }
+    if (ok)
+        ok = rename(image.c_str(), (runtime_data_dir() / "mirror.erofs").c_str()) == 0;
+    if (!ok)
+        mlog("overlay: EROFS verification/commit failed: " + checked.stderr_str + error,
+             logging::Level::Error);
+    cleanup();
+    return ok;
+}
 }  // namespace
 
 bool mount_modules(const std::vector<ModuleEntry>& modules, const Config& config) {
+    if (config.fs_type == "erofs" && storage::current_mirror_dir(config).empty() &&
+        !build_erofs(modules, config))
+        return false;
     const storage::Handle base = storage::setup(config);
     if (!base.ok) {
         mlog("overlay: storage base setup failed", logging::Level::Error);
