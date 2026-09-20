@@ -67,12 +67,12 @@ jobs:
         echo "Size after stripping: $(du -h "/github/workspace/out/$OUTPUT_NAME" | cut -f1)"
         
     - name: Install GPG
-      if: github.event_name != 'pull_request'
+      if: github.event_name != 'pull_request' && github.event.repository.fork != true
       run: |
         apt-get update && apt-get install -y gnupg
 
     - name: Import GPG key
-      if: github.event_name != 'pull_request'
+      if: github.event_name != 'pull_request' && github.event.repository.fork != true
       env:
         GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
@@ -83,7 +83,7 @@ jobs:
         rm -f key.asc
 
     - name: Sign kernelsu.ko with GPG
-      if: github.event_name != 'pull_request'
+      if: github.event_name != 'pull_request' && github.event.repository.fork != true
       run: |
         cd /github/workspace/out
         KO_FILE="${{ inputs.kmi }}_kernelsu.ko"
