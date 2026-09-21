@@ -24,7 +24,7 @@ jobs:
           case "$SOURCE_RUN" in ''|*[!0-9]*) exit 1 ;; esac
           test "$(gh run view "$SOURCE_RUN" --json conclusion --jq .conclusion)" = success
           gh run view "$SOURCE_RUN" --json headSha,url > source-build.json
-          gh run download "$SOURCE_RUN" -n ksud-aarch64 -D input
+          gh run download "$SOURCE_RUN" -n ksud-aarch64-linux-android -D input
       - run: python3 tools/storage-test/package.py input/ksud out/yukisu-storage-test.zip
       - uses: actions/upload-artifact@v7
         with:
