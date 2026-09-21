@@ -216,3 +216,12 @@ jobs:
           userspace/ksud/build/ksud
           userspace/ksud/build/ksud.sig
         if-no-files-found: ignore
+
+    - name: Package storage test for the official manager
+      run: python3 tools/storage-test/package.py userspace/ksud/build/ksud out/yukisu-storage-test.zip
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: storage-test-${{ inputs.target }}
+        path: out/yukisu-storage-test.zip
+        if-no-files-found: error
