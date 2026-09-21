@@ -3,7 +3,7 @@ set -eu
 umask 077
 BASE=/data/adb/ace5-ksud-test
 LIVE=/data/adb/ksud
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 fail() { echo "$*" >&2; exit 1; }
 hash() { sha256sum "$1" | awk '{print $1}'; }
 [ "$(id -u)" = 0 ] || fail "Run from a terminal granted root by the official YukiSU manager"

@@ -28,3 +28,6 @@ jobs:
         with:
           ignore_names: gradlew
           ignore_paths: ./userspace/ksud/assets/installer.sh
+
+      - name: Storage test installer fixtures
+        run: python3 tools/storage-test/check.py
