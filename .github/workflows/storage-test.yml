@@ -1,0 +1,35 @@
+name: "Storage test · official manager"
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: "Successful Build Manager run ID from this fork"
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 tools/storage-test/check.py
+      - name: Download tested build artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+        run: |
+          case "$SOURCE_RUN" in ''|*[!0-9]*) exit 1 ;; esac
+          test "$(gh run view "$SOURCE_RUN" --json conclusion --jq .conclusion)" = success
+          gh run view "$SOURCE_RUN" --json headSha,url > source-build.json
+          gh run download "$SOURCE_RUN" -n ksud-aarch64 -D input
+      - run: python3 tools/storage-test/package.py input/ksud out/yukisu-storage-test.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: yukisu-storage-test
+          path: |
+            out/yukisu-storage-test.zip
+            source-build.json
+          if-no-files-found: error
